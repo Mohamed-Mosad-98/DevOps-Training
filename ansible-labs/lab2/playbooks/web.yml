@@ -1,0 +1,70 @@
+---
+- name: Configure NGINX web server
+  hosts: managed               # المجموعة المكتوبة في inventory.ini
+  become: true                 # استخدم sudo على السيرفر المُدار
+
+  vars:                        # متغيرات هتظهر داخل الصفحة
+    web_index_title: "Welcome from Ansible!"
+    web_message: "Deployed automatically on {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}"
+
+  pre_tasks:                   # تجهيز قبل المهام
+    - name: Update apt cache on Debian/Ubuntu
+      apt:
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Refresh dnf metadata on RHEL
+      dnf:
+        update_cache: yes
+      when: ansible_os_family == "RedHat"
+
+    - name: Enable nginx module (RHEL only)
+      command: dnf -y module enable nginx:1.22
+      register: modout
+      failed_when: false
+      changed_when: "'enabled' in modout.stdout"
+      when: ansible_os_family == "RedHat"
+
+  tasks:
+    - name: Install nginx
+      package:
+        name: nginx
+        state: present
+
+    - name: Ensure nginx is enabled and running
+      service:
+        name: nginx
+        state: started
+        enabled: yes
+
+    - name: Open HTTP in firewalld if running (RHEL)
+      when: ansible_os_family == "RedHat"
+      block:
+        - name: Check firewalld state
+          command: systemctl is-active firewalld
+          register: fw_state
+          failed_when: false
+          changed_when: false
+
+        - name: Allow http service
+          firewalld:
+            service: http
+            permanent: yes
+            state: enabled
+            immediate: yes
+          when: fw_state.stdout == "active"
+
+    - name: Deploy custom index.html
+      template:
+        src: templates/index.html.j2
+        dest: /usr/share/nginx/html/index.html
+        owner: root
+        group: root
+        mode: '0644'
+      notify: reload nginx
+
+  handlers:
+    - name: reload nginx
+      service:
+        name: nginx
+        state: reloaded

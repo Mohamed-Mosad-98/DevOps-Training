@@ -1,0 +1,11 @@
+# Ansible artifacts
+*.retry
+*.log
+
+# لا ترفع ملف كلمة مرور الفولت (لو أنشأته محليًا)
+.vault-pass.txt
+
+# Editors/Env
+.vscode/
+.idea/
+__pycache__/

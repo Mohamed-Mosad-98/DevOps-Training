@@ -1,0 +1,83 @@
+---
+# == Jenkins on RHEL 9 ==
+# يفترض أن الـ play عندك فيه become: true
+
+# 1) تثبيت Java 17 (مطلوب لـ Jenkins)
+- name: Install OpenJDK 17 (RHEL)
+  ansible.builtin.package:
+    name: java-17-openjdk
+    state: present
+  when: ansible_os_family == "RedHat"
+
+# 2) التأكد من أدوات dnf (لإدارة المستودعات)
+- name: Ensure dnf plugins present
+  ansible.builtin.package:
+    name: dnf-plugins-core
+    state: present
+  when: ansible_os_family == "RedHat"
+
+# 3) إضافة مستودع Jenkins بالطريقة الصحيحة
+- name: Configure Jenkins yum repository
+  ansible.builtin.yum_repository:
+    name: jenkins
+    description: Jenkins-stable
+    baseurl: https://pkg.jenkins.io/redhat-stable/
+    enabled: yes
+    gpgcheck: yes
+    repo_gpgcheck: no
+    gpgkey: https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
+    sslverify: yes
+  when: ansible_os_family == "RedHat"
+
+# 4) تنظيف وبناء كاش الميتاداتا (أحيانًا يحل مشاكل الريبو)
+- name: Clean all dnf metadata
+  ansible.builtin.command: dnf clean all
+  changed_when: false
+  when: ansible_os_family == "RedHat"
+
+- name: Makecache for Jenkins repo only
+  ansible.builtin.command: dnf -y makecache --disablerepo="*" --enablerepo="jenkins"
+  register: jenkins_cache
+  changed_when: "'Metadata cache created' in jenkins_cache.stdout"
+  when: ansible_os_family == "RedHat"
+
+# 5) متطلبات شائعة
+- name: Ensure Jenkins dependencies
+  ansible.builtin.package:
+    name:
+      - fontconfig
+      - initscripts
+    state: present
+  when: ansible_os_family == "RedHat"
+
+# 6) تثبيت Jenkins
+- name: Install Jenkins
+  ansible.builtin.package:
+    name: jenkins
+    state: present
+
+# 7) تشغيل وتمكين الخدمة
+- name: Enable and start Jenkins
+  ansible.builtin.service:
+    name: jenkins
+    state: started
+    enabled: yes
+
+# 8) فتح المنفذ 8080 في الجدار الناري لو firewalld شغّال
+- name: Open 8080/tcp in firewalld if running
+  when: ansible_os_family == "RedHat"
+  block:
+    - name: Check firewalld state
+      ansible.builtin.command: systemctl is-active firewalld
+      register: fw_state
+      failed_when: false
+      changed_when: false
+
+    - name: Allow 8080/tcp
+      ansible.posix.firewalld:
+        port: 8080/tcp
+        permanent: yes
+        state: enabled
+        immediate: yes
+      when: fw_state.stdout == "active"
+

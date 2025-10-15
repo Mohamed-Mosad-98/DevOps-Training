@@ -1,0 +1,133 @@
+---
+- name: Lab 4 - MySQL with Ansible Vault (RHEL 9)
+  hosts: managed
+  become: true
+
+  vars_files:
+    - group_vars/managed/main.yml     # غير حسّاس
+    - group_vars/managed/vault.yml    # مشفّر (يحتوي mysql_app_password و mysql_root_password)
+
+  pre_tasks:
+    # إضافة مستودع MySQL الرسمي (بدون تنزيل RPM)
+    - name: Configure MySQL Community repo for EL9 (no RPM download)
+      ansible.builtin.yum_repository:
+        name: mysql80-community
+        description: "MySQL 8.0 Community Repo"
+        baseurl: "https://repo.mysql.com/yum/mysql-8.0-community/el/9/$basearch/"
+        enabled: yes
+        gpgcheck: yes
+        gpgkey:
+          - https://repo.mysql.com/RPM-GPG-KEY-mysql-2023
+      when: ansible_os_family == "RedHat"
+
+    - name: Clean and makecache for MySQL repo
+      ansible.builtin.command: dnf clean all
+      changed_when: false
+      when: ansible_os_family == "RedHat"
+
+    - name: Makecache (MySQL repo only)
+      ansible.builtin.command: dnf -y makecache --disablerepo="*" --enablerepo="mysql80-community"
+      register: mysql_cache
+      changed_when: "'Metadata cache created' in mysql_cache.stdout"
+      when: ansible_os_family == "RedHat"
+
+  tasks:
+    # تثبيت السيرفر + PyMySQL (لازم لوحدات community.mysql)
+    - name: Install MySQL Server and PyMySQL (via dnf)
+      ansible.builtin.dnf:
+        name:
+          - mysql-community-server
+          - python3-PyMySQL
+        state: present
+        enablerepo: mysql80-community
+        allowerasing: yes
+        lock_timeout: 300
+
+    - name: Ensure mysqld is enabled and running
+      ansible.builtin.service:
+        name: mysqld
+        state: started
+        enabled: yes
+
+    # انتظار جاهزية الـ socket
+    - name: Wait for MySQL socket to appear
+      ansible.builtin.wait_for:
+        path: "{{ mysql_unix_socket }}"
+        state: present
+        timeout: 120
+
+    # محاولة (أ): تعيين كلمة مرور root عبر socket بدون كلمة مرور
+    - name: Try set root password via socket (no password)
+      ansible.builtin.shell: >
+        mysql --protocol=socket --socket={{ mysql_unix_socket }} -uroot
+        -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '{{ mysql_root_password }}'; FLUSH PRIVILEGES;"
+      register: set_root_nopw
+      changed_when: set_root_nopw.rc == 0
+      failed_when: false
+      no_log: true
+
+    # قراءة الباسورد المؤقت من اللوج لو المحاولة (أ) فشلت
+    - name: Read temporary root password from mysqld.log (if exists)
+      ansible.builtin.shell: "awk '/temporary password/ {print $NF; exit}' /var/log/mysqld.log || true"
+      register: tmp_root_pw
+      changed_when: false
+      when: set_root_nopw.rc != 0
+
+    # محاولة (ب): استخدام الباسورد المؤقت لضبط كلمة مرور root
+    - name: Set root password using temporary password (fallback)
+      ansible.builtin.shell: >
+        mysql -uroot -p'{{ tmp_root_pw.stdout }}' --connect-expired-password
+        -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '{{ mysql_root_password }}'; FLUSH PRIVILEGES;"
+      register: set_root_tmp
+      changed_when: set_root_tmp.rc == 0
+      failed_when: false
+      no_log: true
+      when:
+        - set_root_nopw.rc != 0
+        - tmp_root_pw.stdout is defined
+        - tmp_root_pw.stdout | length > 0
+
+    # فحص أخير: جرّب الدخول بكلمة root الجديدة
+    - name: Verify root access (SELECT 1)
+      community.mysql.mysql_query:
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        login_host: "localhost"
+        query: "SELECT 1;"
+      register: root_verify
+
+    # إنشاء قاعدة البيانات
+    - name: Create iVolve database
+      community.mysql.mysql_db:
+        name: "{{ mysql_db_name }}"
+        state: present
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        login_host: "localhost"
+
+    # إنشاء المستخدم ومنحه الصلاحيات على قاعدة iVolve
+    - name: Create application user with privileges on iVolve
+      community.mysql.mysql_user:
+        name: "{{ mysql_app_user }}"
+        password: "{{ mysql_app_password }}"
+        host: "%"
+        state: present
+        priv: "{{ mysql_db_name }}.*:ALL"
+        update_password: on_create
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        login_host: "localhost"
+      no_log: true
+
+    # التحقق: الدخول كمستخدم التطبيق وعرض القواعد
+    - name: Validate by listing databases using app user
+      community.mysql.mysql_query:
+        login_user: "{{ mysql_app_user }}"
+        login_password: "{{ mysql_app_password }}"
+        login_host: "localhost"
+        query: "SHOW DATABASES;"
+      register: dbs
+
+    - name: Show databases (debug)
+      ansible.builtin.debug:
+        var: dbs.query_results[0].rows

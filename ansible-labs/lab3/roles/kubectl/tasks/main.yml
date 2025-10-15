@@ -1,0 +1,14 @@
+---
+- name: Download kubectl
+  get_url:
+    url: "https://dl.k8s.io/release/v1.30.4/bin/linux/amd64/kubectl"
+    dest: /usr/local/bin/kubectl
+    mode: '0755'
+
+- name: Ensure kubectl is executable
+  file:
+    path: /usr/local/bin/kubectl
+    mode: '0755'
+    state: file
+
+# tasks file for roles/kubectl
