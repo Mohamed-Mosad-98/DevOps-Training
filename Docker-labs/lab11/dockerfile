@@ -1,0 +1,21 @@
+# استخدم صورة بايثون الرسمية
+FROM python:3.9
+
+# اضبط مكان العمل
+WORKDIR /app
+
+# انسخ الكود
+COPY . .
+
+# نزّل مكتبة Flask
+RUN pip install flask
+
+# عرّض البورت 8080
+EXPOSE 8080
+
+# عرّف متغيرات البيئة الخاصة بالإنتاج (production)
+ENV APP_MODE=production
+ENV APP_REGION=canada-west
+
+# شغّل التطبيق
+CMD ["python", "app.py"]
